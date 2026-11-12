@@ -6,28 +6,37 @@
   Easiest: double-click install-windows.cmd in the folder above this one.
 
   What it does:
-    1. Downloads a private copy of Node.js into the app folder (nothing is installed system-wide).
-    2. Installs the app's packages.
+    1. Copies the app to C:\Program Files\Titan Up.
+    2. Downloads a private copy of Node.js into that folder (nothing is installed system-wide)
+       and installs the app's packages.
     3. Registers a scheduled task that starts Titan Up when Windows starts, with no one
        logged in, and restarts it if it stops. Opens the port in Windows Firewall.
 
-  Run it again after updating the files; it restarts Titan Up with the new version.
+  The database and log are kept in C:\ProgramData\Titan Up.
+  Run it again from a newer download to update; it restarts Titan Up with the new version.
 
 .PARAMETER Port
   Port to serve on. Default 8080.
 
 .PARAMETER DataDir
-  Folder for the database and log. Default: the "data" folder inside the app folder.
+  Folder for the database and log. Default: C:\ProgramData\Titan Up.
+
+.PARAMETER InstallDir
+  Where to copy the app. Default: C:\Program Files\Titan Up. Avoid folders inside a user
+  profile (Desktop, Downloads, Documents): the background account cannot read those.
 
 .PARAMETER CurrentUser
-  For when you have no administrator rights: run Titan Up as you, starting when you log on.
-  It only runs while you are logged on (a disconnected Remote Desktop session counts).
+  For when you have no administrator rights: nothing is copied, and Titan Up runs from this
+  folder as you, starting when you log on. It only runs while you are logged on (a
+  disconnected Remote Desktop session counts). Data goes in the "data" folder here.
 
 .PARAMETER NoService
-  Only prepare Node.js and the packages, then print the command to start Titan Up by hand.
+  Only prepare Node.js and the packages in this folder, then print the command to start
+  Titan Up by hand.
 
 .PARAMETER Uninstall
-  Stop Titan Up and remove the scheduled task and firewall rule. Files and data are kept.
+  Stop Titan Up and remove the scheduled task, the firewall rule and the copy in Program
+  Files. The database is kept.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File deploy\install.ps1 -Port 80
@@ -36,6 +45,7 @@
 param(
   [int]$Port = 8080,
   [string]$DataDir,
+  [string]$InstallDir,
   [switch]$CurrentUser,
   [switch]$NoService,
   [switch]$Uninstall,
@@ -49,10 +59,22 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
+function Resolve-Folder($path) { return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path).TrimEnd('\') }
+
 $NodeLine = 22
-$AppDir = Split-Path -Parent $PSScriptRoot
-if (-not $DataDir) { $DataDir = Join-Path $AppDir 'data' }
-$DataDir = $DataDir.TrimEnd('\')
+$SourceDir = Split-Path -Parent $PSScriptRoot   # the folder these files were downloaded to
+# Without administrator rights Titan Up runs from where it is. Otherwise it is
+# copied to Program Files, which every account on the computer can read.
+$InPlace = $CurrentUser -or $NoService
+if ($InPlace) {
+  $AppDir = $SourceDir
+  $defaultData = Join-Path $SourceDir 'data'
+} else {
+  $AppDir = Join-Path $env:ProgramFiles 'Titan Up'
+  if ($InstallDir) { $AppDir = Resolve-Folder $InstallDir }
+  $defaultData = Join-Path $env:ProgramData 'Titan Up'
+}
+if ($DataDir) { $DataDir = Resolve-Folder $DataDir } else { $DataDir = $defaultData }
 $LogFile = Join-Path $DataDir 'titan-up.log'
 $InstallLog = Join-Path $PSScriptRoot 'install.log'
 $NodeDir = Join-Path $AppDir '.node'
@@ -81,9 +103,25 @@ function New-WebClient {
   return $client
 }
 
-# ---------- 1. Node.js ----------
-# Always a private copy inside the app folder: it needs no administrator rights,
-# changes nothing else on the computer, and the background task can always read it.
+# ---------- 1. Copy the app into place ----------
+function Copy-App {
+  if ($SourceDir -eq $AppDir) { return }
+  Say "Copying Titan Up to $AppDir"
+  New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
+  foreach ($folder in 'server', 'public', 'deploy') {
+    # /MIR also removes files that no longer exist in the new version.
+    & robocopy (Join-Path $SourceDir $folder) (Join-Path $AppDir $folder) /MIR /XF install.log /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { Fail "Could not copy the $folder folder to $AppDir." }
+  }
+  foreach ($file in 'package.json', 'package-lock.json', 'README.md', 'LICENSE', 'install-windows.cmd') {
+    $from = Join-Path $SourceDir $file
+    if (Test-Path $from) { Copy-Item -Path $from -Destination (Join-Path $AppDir $file) -Force }
+  }
+}
+
+# ---------- 2. Node.js ----------
+# Always a private copy inside the app folder: it changes nothing else on the
+# computer, and the background task can always find it.
 function Install-Node {
   Say 'Finding Node.js'
   if (Test-NodeOk $Node) {
@@ -106,7 +144,11 @@ function Install-Node {
   if (-not $line) { Fail "nodejs.org lists no Node.js $NodeLine download for Windows $arch." }
   $want, $name = $line.Trim() -split '\s+'
 
-  $work = Join-Path ([IO.Path]::GetTempPath()) "titan-up-node-$PID"
+  # Unpack inside the app folder, not in the temp folder: a folder moved from
+  # the temp folder keeps that folder's private permissions, and the background
+  # account then cannot read it.
+  $work = Join-Path $AppDir '.node-download'
+  if (Test-Path $work) { Remove-Item -Recurse -Force $work }
   New-Item -ItemType Directory -Force -Path $work | Out-Null
   try {
     $zip = Join-Path $work $name
@@ -123,7 +165,7 @@ function Install-Node {
   Write-Host "Using Node.js $(& $Node --version) at $Node"
 }
 
-# ---------- 2. Packages ----------
+# ---------- 3. Packages ----------
 # node_modules\.lock-hash records which package-lock.json the installed packages
 # match, so this step is skipped when nothing changed.
 function Install-Packages {
@@ -150,7 +192,7 @@ function Install-Packages {
   Set-Content -Path $marker -Value $lockHash -NoNewline -Encoding ASCII
 }
 
-# ---------- 3. Background task ----------
+# ---------- 4. Background task ----------
 # The task runs deploy\run.ps1, a small keep-alive script that starts the server
 # and starts it again if it stops. Stopping the task stops that script, and the
 # server shuts itself down when the script is gone.
@@ -178,13 +220,13 @@ function Assert-PortFree {
 }
 
 function Get-RunArguments {
-  return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $PSScriptRoot 'run.ps1')`" -Port $Port -DataDir `"$DataDir`""
+  return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $AppDir 'deploy\run.ps1')`" -Port $Port -DataDir `"$DataDir`""
 }
 
 function Register-MachineTask {
   Say "Setting up the background task `"$TaskName`" (starts with Windows)"
-  # Run as the built-in low-privilege "Local Service" account rather than as an administrator.
-  & icacls $AppDir /grant "${LocalServiceSid}:(OI)(CI)RX" /Q | Out-Null
+  # Run as the built-in low-privilege "Local Service" account rather than as an
+  # administrator. It can read Program Files already; it needs to write the data.
   & icacls $DataDir /grant "${LocalServiceSid}:(OI)(CI)M" /Q | Out-Null
 
   $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -236,9 +278,10 @@ function Show-Result {
   Write-Host "  On this computer:    http://localhost:$Port"
   Write-Host "  For your teammates:  http://$($env:COMPUTERNAME.ToLower()):$Port"
   if ($address) { Write-Host "                       http://${address}:$Port" }
-  Write-Host "  Data and log:        $DataDir"
+  Write-Host "  Installed in:        $AppDir"
+  Write-Host "  Database and log:    $DataDir"
   Write-Host "  Stop or start it:    Task Scheduler, task `"$TaskName`""
-  Write-Host '  Update:              replace the files, then run this installer again'
+  Write-Host '  Update:              download the new version and run its installer'
 }
 
 function Uninstall-TitanUp {
@@ -251,9 +294,16 @@ function Uninstall-TitanUp {
   }
   if (Test-Admin) {
     Get-NetFirewallRule -DisplayName $TaskName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    & icacls $AppDir /remove $LocalServiceSid /Q | Out-Null
   }
-  Write-Host "Your files and data are still in $AppDir. Delete that folder to remove everything."
+  # Remove the copy in Program Files, but only if it really is a Titan Up folder.
+  $isCopy = -not $InPlace -and ($SourceDir -ne $AppDir) -and (Test-Path (Join-Path $AppDir 'deploy\run.ps1')) -and (Test-Path (Join-Path $AppDir 'server\index.js'))
+  if ($isCopy) {
+    Remove-Item -Recurse -Force $AppDir
+    Write-Host "Removed $AppDir."
+  } elseif (-not $InPlace -and (Test-Path $AppDir)) {
+    Write-Host "To finish, delete the folder $AppDir."
+  }
+  if (Test-Path $DataDir) { Write-Host "Your database is still in $DataDir. Delete that folder too if you no longer need it." }
 }
 
 function Main {
@@ -264,13 +314,17 @@ function Main {
     return
   }
 
+  if (-not $InPlace) {
+    Stop-TitanUp | Out-Null
+    Copy-App
+  }
   Install-Node
   Install-Packages
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
   if ($NoService) {
     Say 'Ready. Start Titan Up with:'
-    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'run.ps1')`" -Port $Port -DataDir `"$DataDir`""
+    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$(Join-Path $AppDir 'deploy\run.ps1')`" -Port $Port -DataDir `"$DataDir`""
     return
   }
 
@@ -282,16 +336,18 @@ function Main {
 }
 
 # ---------- entry ----------
-# Setting up a task that runs without anyone logged in needs administrator
-# rights, so restart as administrator (Windows asks for permission).
-$needsAdmin = -not $CurrentUser -and -not $NoService
+# Installing for the whole computer needs administrator rights, so restart as
+# administrator (Windows asks for permission).
+$needsAdmin = -not $InPlace
 if ($needsAdmin -and -not (Test-Admin)) {
   if ($Elevated) {
     Write-Host 'Error: administrator rights were not granted.' -ForegroundColor Red
     exit 1
   }
-  Write-Host 'Titan Up needs administrator rights to run in the background. Windows will ask for permission.'
-  $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Port', $Port, '-DataDir', "`"$DataDir`"", '-TaskName', "`"$TaskName`"", '-Elevated')
+  Write-Host 'This needs administrator rights. Windows will ask for permission.'
+  $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Port', $Port, '-TaskName', "`"$TaskName`"", '-Elevated')
+  if ($PSBoundParameters.ContainsKey('DataDir')) { $arguments += @('-DataDir', "`"$DataDir`"") }
+  if ($PSBoundParameters.ContainsKey('InstallDir')) { $arguments += @('-InstallDir', "`"$AppDir`"") }
   if ($Uninstall) { $arguments += '-Uninstall' }
   if ($NoPause) { $arguments += '-NoPause' }
   try {

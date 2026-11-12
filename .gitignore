@@ -2,3 +2,4 @@ node_modules/
 data/
 .node/
 deploy/install.log
+.node-download/
