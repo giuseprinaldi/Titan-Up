@@ -1,6 +1,8 @@
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { format } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { openDb, newId, OpError, cleanText } from './db.js';
@@ -337,12 +339,46 @@ export function startServer({ port = 3000, host = '0.0.0.0', dbFile = join(ROOT,
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const dataDir = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(ROOT, 'data');
+  // Settings come from command-line options (--port=8080 --data-dir=D:\retros
+  // --log-file=...) or, failing that, from the environment.
+  const option = (name) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const dataDir = resolve(option('data-dir') || process.env.DATA_DIR || join(ROOT, 'data'));
+  const logFile = option('log-file') || process.env.LOG_FILE;
+  if (logFile) {
+    // A background task on Windows has no console, so keep a copy of what is logged.
+    mkdirSync(dirname(resolve(logFile)), { recursive: true });
+    for (const level of ['log', 'error']) {
+      const original = console[level];
+      console[level] = (...args) => {
+        try {
+          appendFileSync(logFile, `${new Date().toISOString()} ${format(...args)}\n`);
+        } catch {}
+        original(...args);
+      };
+    }
+  }
+  if (process.argv.includes('--exit-with-parent')) {
+    // Started by a keep-alive script (deploy/run.ps1 on Windows). If that script
+    // goes away, stop too, so that stopping the scheduled task really stops the server.
+    const parent = process.ppid;
+    setInterval(() => {
+      try {
+        process.kill(parent, 0);
+      } catch (err) {
+        if (err.code === 'ESRCH') process.exit(0);
+      }
+    }, 2000).unref();
+  }
+  const stop = (err) => {
+    console.error(err);
+    process.exit(1);
+  };
+  process.on('uncaughtException', stop);
   const running = await startServer({
-    port: Number(process.env.PORT) || 3000,
-    host: process.env.HOST || '0.0.0.0',
+    port: Number(option('port') || process.env.PORT) || 3000,
+    host: option('host') || process.env.HOST || '0.0.0.0',
     dbFile: join(dataDir, 'titan-up.db'),
-  });
+  }).catch(stop);
   console.log(`Titan Up is running on http://localhost:${running.port} (data in ${dataDir})`);
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => running.close().then(() => process.exit(0)));
