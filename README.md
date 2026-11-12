@@ -16,28 +16,56 @@ accounts to manage.
 - **No sign-up**: people open the link, type a name, and they are in. The
   browser remembers them. Notes and ratings are always anonymous.
 
-## Run it on a VM with Docker
+## Install on Windows
 
-Copy this folder to the VM (or `git clone` it), then:
+Works on Windows 10, Windows 11 and Windows Server 2016 or newer. The computer
+needs internet access during the install.
 
-```sh
-docker compose up -d --build
-```
+1. Get the files onto the computer: `git clone https://github.com/giuseprinaldi/Titan-Up.git`,
+   or use **Code > Download ZIP** on GitHub and unzip it.
+2. Double-click **`install-windows.cmd`** and approve the administrator prompt.
 
-Titan Up is now on `http://<vm-address>:8080`. To use another port, set
-`TITAN_UP_PORT` first, for example `TITAN_UP_PORT=80 docker compose up -d --build`.
+When it finishes it shows the address to give your teammates, for example
+`http://vm-name:8080`. From then on Titan Up starts by itself whenever Windows
+starts, with nobody logged in, and restarts within a few seconds if it ever
+stops.
 
-- **Data** is one SQLite database in the `titan-up-data` Docker volume. It
-  survives restarts, rebuilds and upgrades.
-- **Update**: replace the files, then run `docker compose up -d --build` again.
-- **Back up**: `docker compose cp titan-up:/data ./backup` copies the database
-  out of the running container. Copy all three `titan-up.db*` files together.
-- **Logs**: `docker compose logs -f`.
-- **Stop**: `docker compose down` (add `-v` only if you want to delete all data).
+What the installer does, so there are no surprises:
 
-## Run it without Docker
+- Downloads a private copy of Node.js into the app folder (checked against the
+  published checksum). Nothing is installed system-wide.
+- Installs the app's packages into the app folder.
+- Registers a scheduled task named "Titan Up" that runs as the built-in
+  low-privilege "Local Service" account.
+- Adds a Windows Firewall rule named "Titan Up" for the port.
 
-Needs Node.js 22.13 or newer. Nothing to compile.
+Options, from a command prompt in the app folder:
+
+| Command                                    | What it does                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| `install-windows.cmd -Port 80`             | Serve on another port (default 8080)                               |
+| `install-windows.cmd -DataDir D:\titan-up` | Keep the database and log somewhere else (default `data\`)         |
+| `install-windows.cmd -CurrentUser`         | No administrator rights: runs as you, only while you are logged on |
+| `install-windows.cmd -Uninstall`           | Stop it and remove the task and firewall rule (data is kept)       |
+
+To remove a `-CurrentUser` install, use `install-windows.cmd -CurrentUser -Uninstall`.
+
+- **Update**: `git pull` (or unzip the new version over the folder), then run
+  `install-windows.cmd` again with the same options.
+- **Back up**: copy the `data` folder (all three `titan-up.db*` files together).
+- **Stop or start**: Task Scheduler, task "Titan Up". Stopping the task stops
+  the server.
+- **If something goes wrong**: the install writes `deploy\install.log`, and the
+  running server writes `data\titan-up.log`.
+- With `-CurrentUser`, teammates can only reach it if Windows Firewall allows
+  the port; adding that rule needs an administrator.
+- If your company blocks PowerShell scripts by policy, the installer cannot
+  run; ask IT to allow it, or use "Run it by hand" below.
+
+## Run it by hand
+
+For trying it out, or for developing. Needs Node.js 22.13 or newer on the
+computer. Nothing to compile.
 
 ```sh
 npm ci --omit=dev
@@ -45,13 +73,14 @@ npm start
 ```
 
 It listens on port 3000 and keeps its database in `./data`. Settings, all
-optional environment variables:
+optional, as environment variables or as options after `server/index.js`:
 
-| Variable   | Default   | What it does                              |
-| ---------- | --------- | ----------------------------------------- |
-| `PORT`     | `3000`    | Port to listen on                         |
-| `HOST`     | `0.0.0.0` | Address to bind to                        |
-| `DATA_DIR` | `./data`  | Folder that holds the `titan-up.db` file  |
+| Variable   | Option        | Default   | What it does                             |
+| ---------- | ------------- | --------- | ---------------------------------------- |
+| `PORT`     | `--port=`     | `3000`    | Port to listen on                        |
+| `HOST`     | `--host=`     | `0.0.0.0` | Address to bind to                       |
+| `DATA_DIR` | `--data-dir=` | `./data`  | Folder that holds the `titan-up.db` file |
+| `LOG_FILE` | `--log-file=` | none      | Also write log lines to this file        |
 
 ## Who can do what
 
@@ -92,4 +121,7 @@ server/actions.js    action items
 server/templates.js  retro formats and health check areas (edit to add your own)
 server/db.js         SQLite schema
 public/js/           the single-page app (Preact, loaded without a bundler)
+install-windows.cmd  double-click installer (runs deploy/install.ps1)
+deploy/install.ps1   sets up Node.js, the packages and the scheduled task
+deploy/run.ps1       what the scheduled task runs: keeps the server running
 ```
