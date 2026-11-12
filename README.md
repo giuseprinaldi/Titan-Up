@@ -32,33 +32,43 @@ stops.
 
 What the installer does, so there are no surprises:
 
-- Downloads a private copy of Node.js into the app folder (checked against the
-  published checksum). Nothing is installed system-wide.
-- Installs the app's packages into the app folder.
+- Copies the app to `C:\Program Files\Titan Up`. The folder you downloaded is
+  only needed for the install; you can delete it afterwards.
+- Downloads a private copy of Node.js into that folder (checked against the
+  published checksum) and installs the app's packages there. Nothing else is
+  installed system-wide.
+- Keeps the database and log in `C:\ProgramData\Titan Up`.
 - Registers a scheduled task named "Titan Up" that runs as the built-in
   low-privilege "Local Service" account.
 - Adds a Windows Firewall rule named "Titan Up" for the port.
 
-Options, from a command prompt in the app folder:
+Options, from a command prompt in the downloaded folder:
 
-| Command                                    | What it does                                                       |
-| ------------------------------------------ | ------------------------------------------------------------------ |
-| `install-windows.cmd -Port 80`             | Serve on another port (default 8080)                               |
-| `install-windows.cmd -DataDir D:\titan-up` | Keep the database and log somewhere else (default `data\`)         |
-| `install-windows.cmd -CurrentUser`         | No administrator rights: runs as you, only while you are logged on |
-| `install-windows.cmd -Uninstall`           | Stop it and remove the task and firewall rule (data is kept)       |
+| Command                                    | What it does                                                          |
+| ------------------------------------------ | --------------------------------------------------------------------- |
+| `install-windows.cmd -Port 80`             | Serve on another port (default 8080)                                  |
+| `install-windows.cmd -DataDir D:\titan-up` | Keep the database and log somewhere else                              |
+| `install-windows.cmd -InstallDir D:\Apps\Titan Up` | Copy the app somewhere other than Program Files              |
+| `install-windows.cmd -CurrentUser`         | No administrator rights: see below                                    |
+| `install-windows.cmd -Uninstall`           | Remove the task, firewall rule and Program Files copy (database kept) |
 
-To remove a `-CurrentUser` install, use `install-windows.cmd -CurrentUser -Uninstall`.
-
-- **Update**: `git pull` (or unzip the new version over the folder), then run
-  `install-windows.cmd` again with the same options.
-- **Back up**: copy the `data` folder (all three `titan-up.db*` files together).
+- **Update**: download the new version (`git pull`, or a fresh ZIP) and run
+  its `install-windows.cmd` with the same options. The database is untouched.
+- **Back up**: copy `C:\ProgramData\Titan Up` (all three `titan-up.db*` files
+  together).
 - **Stop or start**: Task Scheduler, task "Titan Up". Stopping the task stops
   the server.
-- **If something goes wrong**: the install writes `deploy\install.log`, and the
-  running server writes `data\titan-up.log`.
-- With `-CurrentUser`, teammates can only reach it if Windows Firewall allows
-  the port; adding that rule needs an administrator.
+- **If something goes wrong**: the install writes `deploy\install.log` in the
+  downloaded folder, and the running server writes `titan-up.log` next to the
+  database.
+
+**Without administrator rights**, `install-windows.cmd -CurrentUser` copies
+nothing: Titan Up runs from the downloaded folder as you, starts when you log
+on, and only runs while you are logged on (a disconnected Remote Desktop
+session counts). Its database and log are in the `data` folder there.
+Teammates can only reach it if Windows Firewall allows the port, and adding
+that rule needs an administrator. Remove it with
+`install-windows.cmd -CurrentUser -Uninstall`.
 - If your company blocks PowerShell scripts by policy, the installer cannot
   run; ask IT to allow it, or use "Run it by hand" below.
 
@@ -80,7 +90,6 @@ optional, as environment variables or as options after `server/index.js`:
 | `PORT`     | `--port=`     | `3000`    | Port to listen on                        |
 | `HOST`     | `--host=`     | `0.0.0.0` | Address to bind to                       |
 | `DATA_DIR` | `--data-dir=` | `./data`  | Folder that holds the `titan-up.db` file |
-| `LOG_FILE` | `--log-file=` | none      | Also write log lines to this file        |
 
 ## Who can do what
 
@@ -122,6 +131,6 @@ server/templates.js  retro formats and health check areas (edit to add your own)
 server/db.js         SQLite schema
 public/js/           the single-page app (Preact, loaded without a bundler)
 install-windows.cmd  double-click installer (runs deploy/install.ps1)
-deploy/install.ps1   sets up Node.js, the packages and the scheduled task
-deploy/run.ps1       what the scheduled task runs: keeps the server running
+deploy/install.ps1   copies the app into place, sets up Node.js, packages and the scheduled task
+deploy/run.ps1       what the scheduled task runs: keeps the server running and writes the log
 ```
