@@ -18,8 +18,9 @@ accounts to manage.
 
 ## Install on Windows
 
-Works on Windows 10, Windows 11 and Windows Server 2016 or newer. The computer
-needs internet access during the install.
+Works on Windows 10, Windows 11 and Windows Server 2016 or newer. During the
+install the computer needs to reach one site, `nodejs.org`. Everything else
+comes with the download.
 
 1. Get the files onto the computer: `git clone https://github.com/giuseprinaldi/Titan-Up.git`,
    or use **Code > Download ZIP** on GitHub and unzip it.
@@ -35,8 +36,7 @@ What the installer does, so there are no surprises:
 - Copies the app to `C:\Program Files\Titan Up`. The folder you downloaded is
   only needed for the install; you can delete it afterwards.
 - Downloads a private copy of Node.js into that folder (checked against the
-  published checksum) and installs the app's packages there. Nothing else is
-  installed system-wide.
+  published checksum). Nothing is installed system-wide.
 - Keeps the database and log in `C:\ProgramData\Titan Up`.
 - Registers a scheduled task named "Titan Up" that runs as the built-in
   low-privilege "Local Service" account.
@@ -75,10 +75,10 @@ that rule needs an administrator. Remove it with
 ## Run it by hand
 
 For trying it out, or for developing. Needs Node.js 22.13 or newer on the
-computer. Nothing to compile.
+computer. Nothing to compile or install: the packages it uses are in
+`node_modules`, as part of the download.
 
 ```sh
-npm ci --omit=dev
 npm start
 ```
 
@@ -115,12 +115,16 @@ sign-in (the proxy must pass WebSocket upgrades through on `/ws`).
 ## Development
 
 ```sh
-npm install
 npm run dev     # restarts the server when files in server/ change
 npm test        # runs a full retro and health check against a throwaway database
 ```
 
 The browser code in `public/` has no build step: edit a file and reload.
+
+`node_modules` is committed on purpose, so the installer works on computers
+that cannot reach the npm registry. After changing a dependency, run
+`npm ci --omit=dev` and commit the result; `npm test` fails if the folder and
+`package-lock.json` disagree.
 
 ```
 server/index.js      HTTP API, static files, WebSocket rooms
@@ -131,6 +135,7 @@ server/templates.js  retro formats and health check areas (edit to add your own)
 server/db.js         SQLite schema
 public/js/           the single-page app (Preact, loaded without a bundler)
 install-windows.cmd  double-click installer (runs deploy/install.ps1)
-deploy/install.ps1   copies the app into place, sets up Node.js, packages and the scheduled task
+deploy/install.ps1   copies the app into place, sets up Node.js and the scheduled task
+node_modules/        the packages the server and pages use (committed, see above)
 deploy/run.ps1       what the scheduled task runs: keeps the server running and writes the log
 ```

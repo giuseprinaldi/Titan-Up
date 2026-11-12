@@ -7,8 +7,9 @@
 
   What it does:
     1. Copies the app to C:\Program Files\Titan Up.
-    2. Downloads a private copy of Node.js into that folder (nothing is installed system-wide)
-       and installs the app's packages.
+    2. Downloads a private copy of Node.js into that folder (nothing is installed
+       system-wide). The packages the app needs come with the download, in node_modules,
+       so nodejs.org is the only site the installer contacts.
     3. Registers a scheduled task that starts Titan Up when Windows starts, with no one
        logged in, and restarts it if it stops. Opens the port in Windows Firewall.
 
@@ -31,8 +32,7 @@
   disconnected Remote Desktop session counts). Data goes in the "data" folder here.
 
 .PARAMETER NoService
-  Only prepare Node.js and the packages in this folder, then print the command to start
-  Titan Up by hand.
+  Only prepare Node.js in this folder, then print the command to start Titan Up by hand.
 
 .PARAMETER Uninstall
   Stop Titan Up and remove the scheduled task, the firewall rule and the copy in Program
@@ -108,7 +108,7 @@ function Copy-App {
   if ($SourceDir -eq $AppDir) { return }
   Say "Copying Titan Up to $AppDir"
   New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
-  foreach ($folder in 'server', 'public', 'deploy') {
+  foreach ($folder in 'server', 'public', 'deploy', 'node_modules') {
     # /MIR also removes files that no longer exist in the new version.
     & robocopy (Join-Path $SourceDir $folder) (Join-Path $AppDir $folder) /MIR /XF install.log /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { Fail "Could not copy the $folder folder to $AppDir." }
@@ -144,9 +144,8 @@ function Install-Node {
   if (-not $line) { Fail "nodejs.org lists no Node.js $NodeLine download for Windows $arch." }
   $want, $name = $line.Trim() -split '\s+'
 
-  # Unpack inside the app folder, not in the temp folder: a folder moved from
-  # the temp folder keeps that folder's private permissions, and the background
-  # account then cannot read it.
+  # Download into the app folder, not the temp folder, so node.exe is created
+  # with the app folder's permissions and the background account can read it.
   $work = Join-Path $AppDir '.node-download'
   if (Test-Path $work) { Remove-Item -Recurse -Force $work }
   New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -155,9 +154,19 @@ function Install-Node {
     $client.DownloadFile("$base/$name", $zip)
     $got = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $want.ToLower()) { Fail 'The Node.js download is corrupt (checksum mismatch). Run this again.' }
-    Expand-Archive -Path $zip -DestinationPath $work -Force
-    if (Test-Path $NodeDir) { Remove-Item -Recurse -Force $NodeDir }
-    Move-Item -Path (Join-Path $work ($name -replace '\.zip$', '')) -Destination $NodeDir
+    # Only node.exe is needed. The rest of the download is npm, which is not
+    # used and has file paths long enough to fail in a deeply nested folder.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+    try {
+      $entry = $archive.Entries | Where-Object { $_.FullName -match '^[^/]+/node\.exe$' } | Select-Object -First 1
+      if (-not $entry) { Fail 'The Node.js download has no node.exe in it. Run this again.' }
+      if (Test-Path $NodeDir) { Remove-Item -Recurse -Force $NodeDir }
+      New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
+      [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $Node, $true)
+    } finally {
+      $archive.Dispose()
+    }
   } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
   }
@@ -166,30 +175,14 @@ function Install-Node {
 }
 
 # ---------- 3. Packages ----------
-# node_modules\.lock-hash records which package-lock.json the installed packages
-# match, so this step is skipped when nothing changed.
-function Install-Packages {
-  $lockHash = (Get-FileHash -Path (Join-Path $AppDir 'package-lock.json') -Algorithm SHA256).Hash.ToLower()
-  $marker = Join-Path $AppDir 'node_modules\.lock-hash'
-  if ((Test-Path $marker) -and ((Get-Content -Raw $marker).Trim() -eq $lockHash)) {
-    Say 'Packages are already installed'
-    return
+# The packages the app needs come with the download, in node_modules, so nothing
+# is fetched from the npm registry. This only checks that they arrived.
+function Assert-Packages {
+  foreach ($package in 'express', 'ws', 'htm') {
+    if (-not (Test-Path (Join-Path $SourceDir "node_modules\$package\package.json"))) {
+      Fail "This download is incomplete: the node_modules folder has no $package. Download Titan Up again and run its installer."
+    }
   }
-  Say 'Installing packages'
-  $oldPath = $env:Path
-  $env:Path = "$NodeDir;$env:Path"
-  Push-Location $AppDir
-  try {
-    $ErrorActionPreference = 'Continue'
-    & (Join-Path $NodeDir 'npm.cmd') ci --omit=dev --no-audit --no-fund
-    $code = $LASTEXITCODE
-  } finally {
-    $ErrorActionPreference = 'Stop'
-    Pop-Location
-    $env:Path = $oldPath
-  }
-  if ($code -ne 0) { Fail 'Could not install the packages. Check that this computer can open https://registry.npmjs.org in a browser, then run this again.' }
-  Set-Content -Path $marker -Value $lockHash -NoNewline -Encoding ASCII
 }
 
 # ---------- 4. Background task ----------
@@ -314,12 +307,12 @@ function Main {
     return
   }
 
+  Assert-Packages
   if (-not $InPlace) {
     Stop-TitanUp | Out-Null
     Copy-App
   }
   Install-Node
-  Install-Packages
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
   if ($NoService) {
